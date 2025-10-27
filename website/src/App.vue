@@ -12,6 +12,7 @@
         Strategy:
         <select v-model="strategy">
           <option value="momentum">Momentum</option>
+          <option value="reversal">Reversal</option>
         </select>
       </label>
 
@@ -33,7 +34,9 @@
       <button type="submit">Run Backtest</button>
     </form>
 
-    <div v-if="loading">Running backtest...</div>
+    <div v-if="loading">Loading...</div>
+
+    <div id="chart-container"></div>
 
     <div v-if="metrics" class="results">
       <h3>Backtest Metrics:</h3>
@@ -51,6 +54,8 @@
 <script setup lang="ts">
 import { ref } from 'vue'
 import axios from 'axios'
+import { createChart, LineSeries } from 'lightweight-charts'
+import type { IChartApi, ISeriesApi, LineData } from 'lightweight-charts'
 
 const ticker = ref('AAPL')
 const strategy = ref('momentum')
@@ -58,28 +63,69 @@ const smaPeriod = ref(20)
 const startDate = ref('2023-01-01')
 const endDate = ref('2024-01-01')
 
-const metrics = ref(null)
+const error = ref<string | null>(null)
 const loading = ref(false)
-const error = ref(null)
+
+interface EquityPoint {
+  date: string
+  value: number
+}
+
+interface Metrics {
+  total_return: number
+  sharpe_ratio: number
+  max_drawdown: number
+}
+
+interface ApiResponse {
+  metrics: Metrics
+  equity_curve: EquityPoint[]
+}
+
+const metrics = ref<Metrics | null>(null)
+
+let chart: IChartApi | null = null
+let lineSeries: ISeriesApi<'Line'> | null = null
 
 const runBacktest = async () => {
   loading.value = true
   error.value = null
-  metrics.value = null
 
   try {
-    const response = await axios.post('http://127.0.0.1:5000/api/backtest', {
+    const response = await axios.post<ApiResponse>('http://127.0.0.1:5000/api/backtest', {
       ticker: ticker.value,
       strategy: strategy.value,
       start_date: startDate.value,
       end_date: endDate.value,
-      params: { sma_period: smaPeriod.value }
+      params: { sma_period: smaPeriod.value },
     })
 
-    metrics.value = response.data.metrics
-  } catch (err) {
-    console.error(err)
-    error.value = err.response?.data?.error || err.message
+  metrics.value = response.data.metrics
+
+  if (chart) {
+    chart.remove()
+    chart = null
+    lineSeries = null
+  }
+
+  chart = createChart("chart-container", { width: 800, height: 600 })
+  lineSeries = chart.addSeries(LineSeries)
+
+  const formattedData: LineData[] = response.data.equity_curve.map((point) => ({
+    time: point.date as unknown as string,
+    value: point.value,
+  }))
+
+  lineSeries.setData(formattedData)
+
+  } catch (err: unknown) {
+    if (axios.isAxiosError(err)) {
+      error.value = err.response?.data?.message ?? err.message
+    } else if (err instanceof Error) {
+      error.value = err.message
+    } else {
+      error.value = String(err)
+    }
   } finally {
     loading.value = false
   }
